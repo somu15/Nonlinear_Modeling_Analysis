@@ -1,0 +1,1536 @@
+# --------------------------------------------------------------------------------------------------
+# 2D Frame -- 4 story EW Frame
+# modified centerline model
+# Laura Eads, July 30, 2010
+# mod 18 June 2011:  added disp time history
+# centerline model with col springs at physical hinge location (ie not at joint centerline)
+# leaning col with zero-stiffness springs
+# elastic beams & columns
+# damping applied only to elastic elements (not including leaning col) using modified rayleigh command
+# OpenSees doesn't apply damping to zero length elements (springs)
+# element IDs:  n modified frame beams = 2xx,  n modified frame columns = 1xx
+#				unmodified frame beam = 2,xxx, unmodified frame columns = 1,xxx
+#				plastic hinge springs = 3x,xxx
+#				spliced columns = 1xx,xxx
+#				rigid link trusses and leaning columns = 6xx,xxx (no damping!)
+# Degrading springs @ PH locations
+# Units:  kips, inches, seconds
+
+# 07 Nov 2011:  updated rayleigh damping to use region -nodeRange for mass proportional damping
+# 28 Nov 2011:  updated problem w/ btm of 3rd story column node connectivity
+# 13 Jan 2012:  instead of -nodeRange 21 53, I listed nodes so that rigid links weren't damped
+#				but IDA results show that this change made no difference in SaCol
+# 8 May 2012:	added "-rayleigh" to fix damping command
+# 9 May 2012:	run with updated DynamicAnalysisCollapseSolver.tcl (updated 08/23/2011)
+# 15 May 2012:	used dtAnalysis = 0.1*dtGM and 20s of free vibration
+
+# SET UP
+wipe all; # clear memory of all past model definitions
+global upperLimit_scaleFactor
+global sf
+set AnaType 2.0	
+global CollapseFlag
+set CollapseFlag "NO"
+set sf 0.0
+set fileNumber 0
+while {$CollapseFlag == "NO"} {
+set sf [expr $sf + 0.3]                                                                             
+set fileNumber [expr $fileNumber + 1]
+wipe;						
+model BasicBuilder -ndm 2 -ndf 3;	# Define the model builder, ndm=#dimension, ndf=#dofs
+set GMdir "GMfiles";				# ground-motion file directory
+source DisplayPlane.tcl;			# procedure for displaying a plane in model
+source DisplayModel2D.tcl;			# procedure for displaying 2D perspective of model
+source DynamicAnalysisCollapseSolver.tcl; # Solver for Dynamic Analysis tracing Collapse
+
+set dispHistDir DispHist;
+file mkdir $dispHistDir; 			# create folder for story displacement histories
+
+###################################################################################################
+#          Define Building Geometry and Nodes													  
+###################################################################################################
+# define GEOMETRY
+	set Hstory1 [expr 15.0*12.0];					# 1st story column height (inches)
+	set HstoryTyp [expr 12.0*12.0];					# 2nd - 4th story column height (inches)
+	set LBay [expr 30.0*12.0];						# beam length (inches)
+	set HBuilding [expr $Hstory1+3.0*$HstoryTyp];   # height of building (inches)
+	set NStories 4;									# number of stories
+	set NBays 2;				    				# number of bays (max 9)
+	set phvert23 [expr 27.1/2.0];					# vert dist from CL of beam-col joint to loc of col hinge on floors 2,3
+	set phvert45 [expr 21.6/2.0];					# vert dist from CL of beam-col joint to loc of col hinge on floors 4,5(roof)
+	set phlat23 [expr 24.5/2.0 +7.5 +22.5/2.0];		# lateral dist from beam-col joint to loc of hinge on floors 2,3
+	set phlat45 [expr 23.9/2.0 +6.28 +18.17/2.0];	# lateral dist from beam-col joint to loc of hinge on floors 4,5(roof)
+
+# define NODAL COORDINATES for beam-column joints
+	# node ID: "xy" where x = floor, y = pier/bay
+	# Ground floor
+	node 11 0.0 0.0;
+	node 12 $LBay 0.0;
+	node 13 [expr 2.0*$LBay] 0.0;
+	node 14 [expr 3.0*$LBay] 0.0;
+	# Level 2
+	node 21 0.0 $Hstory1;
+	node 22 $LBay $Hstory1;
+	node 23 [expr 2.0*$LBay] $Hstory1;
+	node 24 [expr 3.0*$LBay] $Hstory1;
+	# Level 3
+	node 31 0.0 [expr $Hstory1+$HstoryTyp];
+	node 32 $LBay [expr $Hstory1+$HstoryTyp];
+	node 33 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 34 [expr 3.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	# Splice location between L3 and L4
+	node 31500 0.0 [expr $Hstory1+1.5*$HstoryTyp];
+	node 32500 $LBay [expr $Hstory1+1.5*$HstoryTyp];
+	node 33500 [expr 2.0*$LBay] [expr $Hstory1+1.5*$HstoryTyp];
+	# Level 4
+	node 41 0.0 [expr $Hstory1+2.0*$HstoryTyp];
+	node 42 $LBay [expr $Hstory1+2.0*$HstoryTyp];
+	node 43 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 44 [expr 3.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	# Roof
+	node 51 0.0 $HBuilding;
+	node 52 $LBay $HBuilding;
+	node 53 [expr 2.0*$LBay] $HBuilding;
+	node 54 [expr 3.0*$LBay] $HBuilding;
+
+#define extra nodes for PH springs
+	# node ID: "xya" where x = floor, y = pier/bay, a = location relative to beam-col joint:
+	# xy1, xy2 = ph loc in beam left of joint
+	# xy3, xy4 = ph loc in beam rightt of joint
+	# xy5, xy6 = ph loc in column below joint
+	# xy7, xy8 = ph loc in column above joint
+	# for centerline model, 6 and 7 are not used because spring connects column to beam-col joint directly
+
+	#around support nodes - hinge forms at base
+	node 117 0.0 0.0;
+	node 127 $LBay 0.0;
+	node 137 [expr 2.0*$LBay] 0.0;
+
+	#around node 21 0.0 $Hstory1;
+	node 213 $phlat23 $Hstory1;
+	node 214 $phlat23 $Hstory1;
+	node 215 0.0 [expr $Hstory1-$phvert23];
+	node 216 0.0 [expr $Hstory1-$phvert23];
+	node 217 0.0 [expr $Hstory1+$phvert23];
+	node 218 0.0 [expr $Hstory1+$phvert23];
+
+	#around node 22 $LBay $Hstory1;
+	node 221 [expr $LBay-$phlat23] $Hstory1;
+	node 222 [expr $LBay-$phlat23] $Hstory1;
+	node 223 [expr $LBay+$phlat23] $Hstory1;
+	node 224 [expr $LBay+$phlat23] $Hstory1;
+	node 225 $LBay [expr $Hstory1-$phvert23];
+	node 226 $LBay [expr $Hstory1-$phvert23];
+	node 227 $LBay [expr $Hstory1+$phvert23];
+	node 228 $LBay [expr $Hstory1+$phvert23];
+
+	#around node 23 [expr 2.0*$LBay] $Hstory1;
+	node 231 [expr 2.0*$LBay-$phlat23] $Hstory1;
+	node 232 [expr 2.0*$LBay-$phlat23] $Hstory1;
+	node 235 [expr 2.0*$LBay] [expr $Hstory1-$phvert23];
+	node 236 [expr 2.0*$LBay] [expr $Hstory1-$phvert23];
+	node 237 [expr 2.0*$LBay] [expr $Hstory1+$phvert23];
+	node 238 [expr 2.0*$LBay] [expr $Hstory1+$phvert23];
+
+	#around node 31 0.0 [expr $Hstory1+$HstoryTyp];
+	node 313 [expr 0.0+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 314 [expr 0.0+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 315 [expr 0.0] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 316 [expr 0.0] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 317 [expr 0.0] [expr $Hstory1+$HstoryTyp+$phvert23];
+	node 318 [expr 0.0] [expr $Hstory1+$HstoryTyp+$phvert23];
+
+	#around node 32 $LBay [expr $Hstory1+$HstoryTyp];
+	node 321 [expr $LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 322 [expr $LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 323 [expr $LBay+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 324 [expr $LBay+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 325 $LBay [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 326 $LBay [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 327 $LBay [expr $Hstory1+$HstoryTyp+$phvert23];
+	node 328 $LBay [expr $Hstory1+$HstoryTyp+$phvert23];
+
+	#around node 33 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 331 [expr 2.0*$LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 332 [expr 2.0*$LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 335 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 336 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 337 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp+$phvert23];
+	node 338 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp+$phvert23];
+
+	#around node 41 0.0 [expr $Hstory1+2.0*$HstoryTyp];
+	node 413 [expr 0.0+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 414 [expr 0.0+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 415 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 416 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 417 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+	node 418 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+
+	#around node 42 $LBay [expr $Hstory1+2.0*$HstoryTyp];
+	node 421 [expr $LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 422 [expr $LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 423 [expr $LBay+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 424 [expr $LBay+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 425 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 426 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 427 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+	node 428 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+
+	#around node 43 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 431 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 432 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 435 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 436 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 437 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+	node 438 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+
+	#around node 51 0.0 [expr $Hstory1+3.0*$HstoryTyp];
+	node 513 [expr 0.0+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 514 [expr 0.0+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 515 [expr 0.0] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+	node 516 [expr 0.0] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+
+	#around node 52 $LBay [expr $Hstory1+3.0*$HstoryTyp];
+	node 521 [expr $LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 522 [expr $LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 523 [expr $LBay+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 524 [expr $LBay+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 525 [expr $LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+	node 526 [expr $LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+
+	#around node 53 [expr 2.0*$LBay] [expr $Hstory1+3.0*$HstoryTyp];
+	node 531 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 532 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 535 [expr 2.0*$LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+	node 536 [expr 2.0*$LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+
+	#extra nodes for zero-stiffness springs in leaning column
+	node 246 [expr 3.0*$LBay] $Hstory1; # for spring in lower column
+	node 247 [expr 3.0*$LBay] $Hstory1; # for spring in upper column
+	node 346 [expr 3.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 347 [expr 3.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 446 [expr 3.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 447 [expr 3.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 546 [expr 3.0*$LBay] $HBuilding;
+
+# BOUNDARY CONDITIONS
+	# fix node dx dy r; 1=fixed, 0=free
+	fix 11 1 1 1;		
+	fix 12 1 1 1;
+	fix 13 1 1 1;
+	fix 14 1 1 0;	# P-delta column is pinned
+
+###################################################################################################
+#                                  Define Elements
+###################################################################################################
+# define MATERIAL properties
+	set Fy 50.0;				# steel yield strength
+	set Es 29000.0;				# Steel Young's Modulus
+
+# Stiffness modifications
+	set n 10.0;				# stiffness multiplier for spring elements
+	#for elastic elements, use 4, 4, 2 for K11, K33, K44
+	# Stiffness Coefficients as a function of n for element with 2 springs at the ends
+	set K44 [expr 6.0*(1.0+$n)/(2.0+3.0*$n)] ;
+	set K11 [expr (1.0+2.0*$n)*$K44/(1.0+$n)] ;
+	set K33 [expr (1.0+2.0*$n)*$K44/(1.0+$n)] ;
+	# Stiffness Coefficients as a function of n for element with 1 spring at the end (i.e., spliced columns)
+	# input is ... $K11_1 $K33_1 $K44_1 ... for spring at node i
+	# input is ... $K33_1 $K11_1 $K44_1 ... for spring at node j
+	set K44_1 [expr 2.0*($n)/(1.0/3.0 + $n)];
+	set K11_1 [expr 2.0*$K44_1];
+	set K33_1 [expr (1.0+2.0*$n)*$K44_1/(1.0+$n)];
+
+# Element properties
+	# Column section W24x131, story 1, 2, 3.5
+	set Acol12 38.5;						# cross-sectional area
+	set Ic12 4020.0;						# moment of inertia
+	set Ic12mod [expr $Ic12*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Mycol12 20350.0;					# yield moment
+	set Kcol1 [expr $n*6.0*$Es*$Ic12mod/($Hstory1-$phvert23)];				# rot stiffness of 1st story column spring
+	set Kcol2 [expr $n*6.0*$Es*$Ic12mod/($HstoryTyp-2.0*$phvert23)];		# rot stiffness of 2nd story column spring
+	set KspliceLow [expr $n*3.0*$Es*$Ic12mod/(0.5*$HstoryTyp-$phvert23)];	# rot stiffness of lower 3rd story (spliced) column spring
+
+	# Column section W24x76, story 3.5, 4
+	set Acol34 22.4;						# cross-sectional area
+	set Ic34 2100.0;						# moment of Inertia
+	set Ic34mod [expr $Ic34*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Mycol34 11000.0;					# yield moment
+	set Kcol34 [expr $n*6.0*$Es*$Ic34mod/($HstoryTyp-2.0*$phvert45)];			# rot stiffness of 4th story column springs
+	set KspliceUp [expr $n*3.0*$Es*$Ic34mod/(0.5*$HstoryTyp-$phvert45)];		# rot stiffness of upper 3rd story (spliced) column spring
+
+	# Beam section W27x102, floor 2, 3
+	set Ab23 30.0;							# cross-sectional area
+	set Ib23 3620.0;						# moment of Inertia
+	set Ib23mod [expr $Ib23*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Myb23 10938.0;						# yield moment
+	set Kb23 [expr $n*6.0*$Es*$Ib23mod/($LBay-2.0*$phlat23)];	# rot stiffness of 2,3 floor beam springs
+
+	# Beam section W21x93, floor 4, 5
+	set Ab45 27.3;							# cross-sectional area
+	set Ib45 2070.0;						# moment of Inertia
+	set Ib45mod [expr $Ib45*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Myb45 7930.0;						# yield moment
+	set Kb45 [expr $n*6.0*$Es*$Ib45mod/($LBay-2.0*$phlat45)];	# rot stiffness of 4,5 floor beam springs
+
+# set up geometric transformations of element
+	set transfTag 1;
+	geomTransf PDelta $transfTag; 	# PDelta transformation
+
+#define spring properties and create spring elements
+	#Spring ID: "3xyab", where 3=spring, x=floor, y=pier/bay, ab = dir from node: 12=left,34=right,5=below,8=above
+	#rotSpring2DModIKModel	id    ndR  ndC     K   asPos  asNeg  MyPos      MyNeg      LS    LK    LA    LD   cS   cK   cA   cD  th_p+   th_p-   th_pc+   th_pc-  Res+   Res-   th_u+   th_u-    D+     D-
+	# define spring model
+	source rotSpring2DModIKModel.tcl;		# Source to define rotational zero-length element with degradation
+
+	# define deterioration parameters for springs (Table 6.1, p 252 of D's thesis)
+	set McMy 1.05;			# ratio of capping moment to yield moment, Mc / My
+	set LS 1.5;				# basic strength deterioration
+	set LK 1.5;				# unloading stiffness deterioration
+	set LA 1.5;				# accelerated reloading stiffness deterioration
+	set LD 1.5;				# post-capping strength deterioration
+	set cS 1.0;				# exponent for basic strength deterioration
+	set cK 1.0;				# exponent for unloading stiffness deterioration
+	set cA 1.0;				# exponent for accelerated reloading stiffness deterioration
+	set cD 1.0;				# exponent for post-capping strength deterioration
+	set th_pP 0.025;		# plastic rot capacity for pos loading
+	set th_pN 0.025;		# plastic rot capacity for neg loading
+	set th_pcP 0.3;			# post-capping rot capacity for pos loading
+	set th_pcN 0.3;			# post-capping rot capacity for neg loading
+	set ResP 0.4;			# residual strength ratio for pos loading
+	set ResN 0.4;			# residual strength ratio for neg loading
+	set th_uP 0.4;			# ultimate rot capacity for pos loading
+	set th_uN 0.4;			# ultimate rot capacity for neg loading
+	set DP 1.0;				# rate of cyclic deterioration for pos loading
+	set DN 1.0;				# rate of cyclic deterioration for neg loading
+	set a_mem [expr ($n+1.0)*($Mycol12*($McMy-1.0)) / ($Kcol1*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];       					# modified Strain Hardening ratio of spring (Ibarra 2003, note: there is mistake in Ibarra eqn B.5)
+
+# define column springs
+	# master node must be specified first for rotSpring2DModIKModel
+	#rotSpring2DModIKModel	id   ndR  ndC  K  asPos  asNeg  MyPos      MyNeg    LS  LK  LA   LD  cS  cK  cA  cD th_p+  th_p-  th_pc+   th_pc-  Res+  Res- th_u+  th_u-  D+  D-
+	#col springs at base
+	rotSpring2DModIKModel  31178  11 117 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  31278  12 127 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  31378  13 137 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	#col springs below 2nd floor
+	rotSpring2DModIKModel  32156  216 215 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32256  226 225 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32356  236 235 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set a_mem [expr ($n+1.0)*($Mycol12*($McMy-1.0)) / ($Kcol2*$th_pP)];		# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        					# modified Strain Hardening ratio of spring
+	#col springs above 2nd floor
+	rotSpring2DModIKModel 32178 217 218 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 32278 227 228 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 32378 237 238 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#col springs below 3rd floor
+	rotSpring2DModIKModel 33156 316 315 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33256 326 325 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33356 336 335 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set a_mem [expr ($n+1.0)*($Mycol12*($McMy-1.0)) / ($KspliceLow*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        						# modified Strain Hardening ratio of spring
+	#col springs above 3rd floor (spliced)
+	rotSpring2DModIKModel 33178 317 318 $KspliceLow $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33278 327 328 $KspliceLow $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33378 337 338 $KspliceLow $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set th_pcP 0.35;
+	set th_pcN 0.35;
+	set a_mem [expr ($n+1.0)*($Mycol34*($McMy-1.0)) / ($KspliceUp*$th_pP)];		# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        						# modified Strain Hardening ratio of spring
+	#col springs below 4th floor (spliced)
+	rotSpring2DModIKModel  34156  416  415   $KspliceUp $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34256  426  425   $KspliceUp $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34356  436  435   $KspliceUp $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set a_mem [expr ($n+1.0)*($Mycol34*($McMy-1.0)) / ($Kcol34*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        					# modified Strain Hardening ratio of spring
+	#col springs above 4th floor	     
+	rotSpring2DModIKModel  34178  417  418   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34278  427  428   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34378  437  438   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#col springs below 5th floor
+	rotSpring2DModIKModel  35156  516  515   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35256  526  525   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35356  536  535   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	#define region tag for col springs to be used for recorders
+	region 620 -ele 31178 31278 31378 32156 32256 32356 32178 32278 32378 33156 33256 33356 33178 33278 33378 34156 34256 34356 34178 34278 34378 35156 35256 35356
+
+# define beam springs
+	set th_pP 0.02;
+	set th_pN 0.02;
+	set th_pcP 0.16;
+	set th_pcN 0.16;
+	set a_mem [expr ($n+1.0)*($Myb23*($McMy-1.0)) / ($Kb23*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        				# modified Strain Hardening ratio of spring
+	#beam springs at floor 2
+	rotSpring2DModIKModel  32134  213   214   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32212  221   222   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32234  223   224   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32312  231   232   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#beam springs at floor 3
+	rotSpring2DModIKModel  33134  313   314   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  33212  321   322   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  33234  323   324   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  33312  331   332   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set LS 1.9;
+	set LK 1.9;
+	set LA 1.9;
+	set LD 1.9;
+	set th_pP 0.025;
+	set th_pN 0.025;
+	set th_pcP 0.19;
+	set th_pcN 0.19;
+	set a_mem [expr ($n+1.0)*($Myb45*($McMy-1.0)) / ($Kb45*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        				# modified Strain Hardening ratio of spring
+	#beam springs at floor 4
+	rotSpring2DModIKModel  34134  413   414   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34212  421   422   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34234  423   424   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34312  431   432   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#beam springs at floor 5
+	rotSpring2DModIKModel  35134  513   514   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35212  521   522   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35234  523   524   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35312  531   532   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	#Define Region Tag for MRF beam springs to be used for recorders
+	region 625 -ele 32134 32212 32234 32312 33134 33212 33234 33312 34134 34212 34234 34312 35134 35212 35234 35312
+
+# Define Beam-Column Elements
+# define columns
+	# element elasticBeamColumn $eleTag $iNode $jNode $A $E $Iz $transfTag
+	# Col ID:  "1xy" where 1=col, x=story, y=bay/pier
+	# Columns Story 1
+	element ModElasticBeam2d  111  117 215 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1112 216 21  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  112  127 225 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1122 226 22  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  113  137 235 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1132 236 23  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	# Columns Story 2
+	element ModElasticBeam2d  1211 21  217 $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  121  218 315 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1212 316 31  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1221 22  227 $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  122  228 325 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1222 326 32  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1231 23  237 $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  123  238 335 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1232 336 33  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	# Columns Story 3 -- spliced columns ("1xy499" = lower section in splice)
+	element ModElasticBeam2d  1311 31  317   $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  131499  318 31500 $Acol12 $Es $Ic12mod $K11_1 $K33_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  131500  31500 415 $Acol34 $Es $Ic34mod $K33_1 $K11_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  1312 416  41   $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1321 32  327   $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  132499  328 32500 $Acol12 $Es $Ic12mod $K11_1 $K33_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  132500  32500 425 $Acol34 $Es $Ic34mod $K33_1 $K11_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  1322 426  42   $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1331 33  337   $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  133499  338 33500 $Acol12 $Es $Ic12mod $K11_1 $K33_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  133500  33500 435 $Acol34 $Es $Ic34mod $K33_1 $K11_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  1332 436  43   $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	# Columns Story 4
+	element ModElasticBeam2d  1411 41  417 $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  141  418 515 $Acol34 $Es $Ic34mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1412 516 51  $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1421 42  427 $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  142  428 525 $Acol34 $Es $Ic34mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1422 526 52  $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1431 43  437 $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  143  438 535 $Acol34 $Es $Ic34mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1432 536 53  $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+# define beams
+	# Beam ID:  "2xya" where 2=beam, x=story, y=bay/pier, a=1 for left section and a=2 for right (both elastic elements)
+	# for the middle portion of the beam, which has springs at each end, there is no "a" term (i.e., ID = "2xy")
+	# Beams Floor 2
+	element ModElasticBeam2d 2211 21  213 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 221  214 221 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2212 222 22  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2221 22  223 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 222  224 231 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2222 232 23  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	# Beams Floor 3
+	element ModElasticBeam2d 2311 31  313 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 231  314 321 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2312 322 32  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2321 32  323 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 232  324 331 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2322 332 33  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	# Beams Floor 4
+	element ModElasticBeam2d 2411 41  413 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 241  414 421 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2412 422 42  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2421 42  423 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 242  424 431 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2422 432 43  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	# Beams Floor 5
+	element ModElasticBeam2d 2511 51  513 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 251  514 521 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2512 522 52  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2521 52  523 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 252  524 531 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2522 532 53  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+
+
+
+# define leaning column elements
+	# elem ID start with "600xxx" so that damping is not applied to them
+	set TrussMatTag 13;
+	set Atruss 1000.0;
+	uniaxialMaterial Elastic $TrussMatTag $Es;
+	# element truss $eleTag $iNode $jNode $A $matTag
+# rigid link beam elements
+	element truss  600223 23 24 $Atruss $TrussMatTag;
+	element truss  600233 33 34 $Atruss $TrussMatTag;
+	element truss  600243 43 44 $Atruss $TrussMatTag;
+	element truss  600253 53 54 $Atruss $TrussMatTag;
+
+# leaning columns  
+	set Ipd 1000.0;  #moment of inertia for leaning columns
+	# K44 = 0.0 to remove rotational restraint
+	# element elasticBeamColumn $eleTag $iNode $jNode $A $E $Iz $K11 $K33 $K44 $transfTag
+	element ModElasticBeam2d  600114 14  246 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+	element ModElasticBeam2d  600124 247 346 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+	element ModElasticBeam2d  600134 347 446 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+	element ModElasticBeam2d  600144 447 546 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+
+# zero-stiffness elastic springs for leaning column
+	source rotLeaningCol.tcl;
+	# Spring ID: "650xya" where 650=leaning column spring; x=floor; y=pier; a=6 for lower col, a=7 for upper column
+	#     		  ElemID  ndR  ndC 
+	rotLeaningCol 650246  24   246;
+	rotLeaningCol 650247  24   247;
+	rotLeaningCol 650346  34   346;
+	rotLeaningCol 650347  34   347;
+	rotLeaningCol 650446  44   446;
+	rotLeaningCol 650447  44   447;
+	rotLeaningCol 650546  54   546;
+# display model
+	#DisplayModel2D NodeNumbers
+	#after 10000 #waits so that node numbers can be read
+
+
+
+############################################################################
+#                       Assign Mass to Nodes                   			   #
+############################################################################
+	# mass $nodeID $MassNode 0.0 0.0;
+	# mass assigned to frame nodes only
+	set mneglig 1.0e-9;
+	set roofmass [expr 1200.0/(386.2*2.0*3.0)];
+	set L4mass [expr 1050.0/(386.2*2.0*3.0)];
+	set L3mass [expr 1050.0/(386.2*2.0*3.0)];
+	set L2mass [expr 1070.0/(386.2*2.0*3.0)];
+
+	# Mass on Roof
+	mass 53 $roofmass $mneglig 0.0;
+	mass 52 $roofmass $mneglig 0.0;
+	mass 51 $roofmass $mneglig 0.0;
+	# Mass on Level 4
+	mass 43 $L4mass $mneglig 0.0;
+	mass 42 $L4mass $mneglig 0.0;
+	mass 41 $L4mass $mneglig 0.0;
+	# Mass on Level 3
+	mass 33 $L3mass $mneglig 0.0;
+	mass 32 $L3mass $mneglig 0.0;
+	mass 31 $L3mass $mneglig 0.0;
+	# Mass on Level 2
+	mass 23 $L2mass $mneglig 0.0;
+	mass 22 $L2mass $mneglig 0.0;
+	mass 21 $L2mass $mneglig 0.0;
+
+############################################################################
+#                       Eigenvalue Analysis                    			   #
+############################################################################
+	set pi [expr 2.0*asin(1.0)];              			# Definition of pi
+	set nEigenI 1;										# mode i = 1
+	set nEigenJ 3;										# mode j = 3
+	set nEigen2 2;										# mode 2
+	set lambdaN [eigen [expr $nEigenJ]];				# eigenvalue analysis for nEigenJ modes
+	set lambdaI [lindex $lambdaN [expr $nEigenI-1]]; 	# eigenvalue mode i
+	set lambdaJ [lindex $lambdaN [expr $nEigenJ-1]]; 	# eigenvalue mode j
+	set lambda2 [lindex $lambdaN [expr $nEigen2-1]]; 	# eigenvalue mode 2
+	set w1 [expr pow($lambdaI,0.5)];					# w1 (1st mode circular frequency)
+	set w3 [expr pow($lambdaJ,0.5)];					# w3 (3rd mode circular frequency)
+	set w2 [expr pow($lambda2,0.5)];					# w2 (2nrd mode circular frequency)
+	set T1 [expr 2.0*$pi/$w1];      					# Define the 1st mode period of the structure
+	set T3 [expr 2.0*$pi/$w3];      					# Define the 3rd mode period of the structure
+	set T2 [expr 2.0*$pi/$w2];      					# Define the 3rd mode period of the structure
+	puts "T1 = $T1 s"
+	puts "T2 = $T2 s"
+	puts "T3 = $T3 s"
+
+############################################################################
+#              Gravity Loads & Gravity Analysis                			   #
+############################################################################
+# Apply gravity loads
+	pattern Plain 101 Constant {
+		
+		# Point loads on leaning column nodes
+		load 24 0.0 [expr -398.02] 0.0;
+		load 34 0.0 [expr -391.31] 0.0;
+		load 44 0.0 [expr -393.83] 0.0;
+		load 54 0.0 [expr -479.50] 0.0;
+		
+		# Point loads on frame column nodes
+		set Proof [expr -40.17];
+		set P_L4 [expr -43.72];
+		set P_L3 [expr -44.56];
+		set P_L2 [expr -45.66];
+
+		# load on Roof
+		load 53 0.0 $Proof 0.0;
+		load 52 0.0 $Proof 0.0;
+		load 51 0.0 $Proof 0.0;
+		# load on Level 4
+		load 43 0.0 $P_L4 0.0;
+		load 42 0.0 $P_L4 0.0;
+		load 41 0.0 $P_L4 0.0;
+		# load on Level 3
+		load 33 0.0 $P_L3 0.0;
+		load 32 0.0 $P_L3 0.0;
+		load 31 0.0 $P_L3 0.0;
+		# load on Level 2
+		load 23 0.0 $P_L2 0.0;
+		load 22 0.0 $P_L2 0.0;
+		load 21 0.0 $P_L2 0.0;
+	}
+
+# Gravity-analysis: load-controlled static analysis
+	set Tol 1.0e-6;							# convergence tolerance for test
+	variable constraintsTypeGravity Plain;	# default;
+	constraints $constraintsTypeGravity ;   # how it handles boundary conditions
+	numberer RCM;							# renumber dof's to minimize band-width (optimization), if you want to
+	system BandGeneral ;					# how to store and solve the system of equations in the analysis (large model: try UmfPack)
+	test NormDispIncr $Tol 6 ; 				# determine if convergence has been achieved at the end of an iteration step
+	algorithm Newton;						# use Newton's solution algorithm: updates tangent stiffness at every iteration
+	set NstepGravity 10;  					# apply gravity in 10 steps
+	set DGravity [expr 1.0/$NstepGravity]; 	# first load increment;
+	integrator LoadControl $DGravity;		# determine the next time step for an analysis
+	analysis Static;						# define type of analysis static or transient
+	analyze $NstepGravity;					# apply gravity
+
+	# maintain constant gravity loads and reset time to zero
+	loadConst -time 0.0
+	puts "Model Built"
+
+############################################################################
+#              Recorders					                			   #
+############################################################################
+set driftroof "DriftRoof"
+set driftS4 "DriftStorey4_"
+set driftS3 "DriftStorey3_"
+set driftS2 "DriftStorey2_"
+set driftS1 "DriftStorey1_"
+set fileroof [concat $driftroof$fileNumber]   
+set fileS4 [concat $driftS4$fileNumber]                                                                                                 
+set fileS3 [concat $driftS3$fileNumber]
+set fileS2 [concat $driftS2$fileNumber]
+set fileS1 [concat $driftS1$fileNumber]
+
+
+
+	# Record envelope & history of Displacement time histories (All floors in the same file)
+	#recorder EnvelopeNode -file Displacement-Env.out -node 21 31 41 51 -dof 1 disp
+	#recorder Node -file Displacement-History.out -time -node 21 31 41 51 -dof 1 disp
+	#recorder Node -file $dispHistDir/C99tcu116N.th-DispHist-SF-0.000043.out -time -node 21 31 41 51 -dof 1 disp	
+	
+	# Record Relative Acceleration time histories All in the same file
+	#recorder Node -file RelAccel-History.out -time -node 21 31 41 51 -dof 1 accel
+
+	# #Record envelope of Relative Velocity time histories ALL in the same file
+	# recorder EnvelopeNode -file Velocity-History.out -time -node 21 31 41 51 -dof 1 vel
+	
+	# Record Story Drift Histories
+	recorder Drift -file temp/$fileS1.out -time -iNode 11 -jNode 21 -dof 1 -perpDirn 2
+	recorder Drift -file temp/$fileS2.out -time -iNode 21 -jNode 31 -dof 1 -perpDirn 2
+	recorder Drift -file temp/$fileS3.out -time -iNode 31 -jNode 41 -dof 1 -perpDirn 2                                          
+        recorder Drift -file temp/$fileS4.out -time -iNode 41 -jNode 51 -dof 1 -perpDirn 2
+	recorder Drift -file temp/$fileroof.out -time -iNode 11 -jNode 51 -dof 1 -perpDirn 2
+	
+	# Recorded Column Forces per Story in Global Coordinates (for Story Shear)
+	#recorder Element -file ColForce-Story1.out -time -ele 111 112 113 600114 force;
+	#recorder Element -file ColForce-Story2.out -time -ele 121 122 123 600124 force;
+	#recorder Element -file ColForce-Story4.out -time -ele 141 142 143 600144 force;
+	
+	# # Recorded envelope of Column Forces per Story in Local Coordinates (for Axial Load in MRF Columns)
+	# recorder EnvelopeElement -file ColAxialForce1.out -time -ele 111 113 localForce;
+	# recorder EnvelopeElement -file ColAxialForce2.out -time -ele 121 123 localForce;
+	# recorder EnvelopeElement -file ColAxialForce3.out -time -ele 131499 133499 localForce;
+	# recorder EnvelopeElement -file ColAxialForce4.out -time -ele 141 143 localForce;
+	
+	#Record envelope of MRF Column Spring Responses in one file
+	#recorder EnvelopeElement -file MRFcolSpring-Force-Env.out -region 620 force
+	#recorder EnvelopeElement -file MRFcolSpring-Deformation-Env.out -region 620 deformation
+	
+	#Record envelope of MRF Beam Spring Responses in one file
+	#recorder EnvelopeElement -file MRFbeamSpring-Force-Env.out -region 625 force
+	#recorder EnvelopeElement -file MRFbeamSpring-Deformation-Env.out -region 625 deformation
+
+#######################################################################################
+#                                                                                     #
+#                               4.Dynamic Analysis commands                           #
+#                                                                                     #
+########################################################################################
+# parameters for wind
+	set dt 0.01000000;				# Time step for ground motion
+	set dtAn [expr $dt];	# initial analysis time step
+set force_Node21 "test_force_21.txt";	# Wind force at node 21 file name
+set force_Node23 "test_force_23.txt";	# Wind force at node 23 file name
+set force_Node31 "test_force_31.txt";	# Wind force at node 31 file name
+set force_Node33 "test_force_33.txt";	# Wind force at node 33 file name
+set force_Node41 "test_force_41.txt";	# Wind force at node 41 file name
+set force_Node43 "test_force_43.txt";	# Wind force at node 43 file name
+set force_Node51 "test_force_51.txt";	# Wind force at node 51 file name
+set force_Node53 "test_force_53.txt";	# Wind force at node 53 file name
+	set Scalefact $sf;# Scale factor of wind
+	set numGMpts 30000.000000;	# number of steps in wind
+	set GMtime [expr $dt*$numGMpts + 20.0];	# total time of ground motion + residual time (for residual SDRs)
+	puts "Scale Factor = $Scalefact"
+
+set filename "Scale factor.txt"
+    set fileId [open $filename "w"]
+    puts -nonewline $fileId $Scalefact
+    close $fileId
+
+
+if {[catch {exec matlab -nosplash -nodesktop -r "Wind_Turbulence_Modelling; quit"}]} {
+    puts "Ignore this $msg"
+    }
+    source Sleep.tcl
+    Sleep 15
+
+
+
+
+	# Assign Parameters to wind
+timeSeries Path 1 -dt $dt -filePath $force_Node21 -factor 1.0
+timeSeries Path 2 -dt $dt -filePath $force_Node23 -factor 1.0
+timeSeries Path 3 -dt $dt -filePath $force_Node31 -factor 1.0
+timeSeries Path 4 -dt $dt -filePath $force_Node33 -factor 1.0
+timeSeries Path 5 -dt $dt -filePath $force_Node41 -factor 1.0
+timeSeries Path 6 -dt $dt -filePath $force_Node43 -factor 1.0
+timeSeries Path 7 -dt $dt -filePath $force_Node51 -factor 1.0
+timeSeries Path 8 -dt $dt -filePath $force_Node53 -factor 1.0
+pattern Plain 1 1 {
+load 21 1.0 0.0 0.0
+}
+pattern Plain 2 2 {
+load 23 1.0 0.0 0.0
+}
+pattern Plain 3 3 {
+load 31 1.0 0.0 0.0
+}
+pattern Plain 4 4 {
+load 33 1.0 0.0 0.0
+}
+pattern Plain 5 5 {
+load 41 1.0 0.0 0.0
+}
+pattern Plain 6 6 {
+load 43 1.0 0.0 0.0
+}
+pattern Plain 7 7 {
+load 51 1.0 0.0 0.0
+}
+pattern Plain 8 8 {
+load 53 1.0 0.0 0.0
+}
+# Rayleigh Damping
+	set zeta 0.02;
+	set a0 [expr $zeta*2.0*$w1*$w3/($w1 + $w3)];	# mass damping coeff
+	set a1 [expr $zeta*2.0/($w1 + $w3)];			# stiffness damping coeff
+	set a1_mod [expr $a1*(1.0+$n)/$n];				# modified stiffness damping coeff for n modified elements
+	set a1_splice [expr $a1*(1.0+ 1.0/(2.0*$n))];	# modified stiffness damping coeff for spliced columns
+
+	region 1 -eleRange 1 999 -rayleigh 0.0 0.0 $a1_mod 0.0;	# assign stiffness propor damping to el beams & col w/ n modifications
+	region 2 -eleRange 1000 9999 -rayleigh 0.0 0.0 $a1 0.0;	# assign stiffness propor damping to el beams w/out n modifications
+	region 3 -eleRange 100000 199999 -rayleigh 0.0 0.0 $a1_splice 0.0;	# assign stiffness propor damping to spliced columns w/ n modifications
+	region 4 -node 21 22 23 31 32 33 41 42 43 51 52 53 -rayleigh $a0 0.0 0.0 0.0;	# assign mass proportional damping to nodes with mass
+	
+# Call Dynamic Analysis Solver and run for collapse tracing
+	source DynamicAnalysisCollapseSolverHurricane.tcl
+	set FloorNodes [ list 21 31 41 51];		# list of floor nodes for drift monitoring
+	set currentTime [getTime]
+DynamicAnalysisCollapseSolverHurricane $dt $dtAn $GMtime $NStories 0.20 $FloorNodes $Hstory1 $HstoryTyp
+	set currentTime [getTime]
+	puts "The CurrentTime was: $currentTime"
+
+if {$CollapseFlag == "YES"} {
+set upperLimit_scaleFactor $Scalefact
+puts "Upper Bound for collapse scale factor established"
+puts "Upper Bound $upperLimit_scaleFactor"
+}
+	wipe all                                                                                                                        
+}
+
+
+set permission 0.0                                                                                                        
+if {$permission>0.1} {
+#########################################################################################################
+#
+#
+#                                    BISECTION
+#
+#
+#########################################################################################################
+set tolerance 10;
+set scaleFactorUpper $upperLimit_scaleFactor;
+set scaleFactorLower [expr $upperLimit_scaleFactor-0.1];
+while {$tolerance > 0.02} {
+set newScaleFactor [expr 0.5*$scaleFactorUpper+0.5*$scaleFactorLower];
+puts "Running Bisection"
+puts "Current scale factor is $newScaleFactor"
+wipe;						
+model BasicBuilder -ndm 2 -ndf 3;	# Define the model builder, ndm=#dimension, ndf=#dofs
+set GMdir "GMfiles";				# ground-motion file directory
+source DisplayPlane.tcl;			# procedure for displaying a plane in model
+source DisplayModel2D.tcl;			# procedure for displaying 2D perspective of model
+source DynamicAnalysisCollapseSolver.tcl; # Solver for Dynamic Analysis tracing Collapse
+
+set dispHistDir DispHist;
+file mkdir $dispHistDir; 			# create folder for story displacement histories
+
+###################################################################################################
+#          Define Building Geometry and Nodes													  
+###################################################################################################
+# define GEOMETRY
+	set Hstory1 [expr 15.0*12.0];					# 1st story column height (inches)
+	set HstoryTyp [expr 12.0*12.0];					# 2nd - 4th story column height (inches)
+	set LBay [expr 30.0*12.0];						# beam length (inches)
+	set HBuilding [expr $Hstory1+3.0*$HstoryTyp];   # height of building (inches)
+	set NStories 4;									# number of stories
+	set NBays 2;				    				# number of bays (max 9)
+	set phvert23 [expr 27.1/2.0];					# vert dist from CL of beam-col joint to loc of col hinge on floors 2,3
+	set phvert45 [expr 21.6/2.0];					# vert dist from CL of beam-col joint to loc of col hinge on floors 4,5(roof)
+	set phlat23 [expr 24.5/2.0 +7.5 +22.5/2.0];		# lateral dist from beam-col joint to loc of hinge on floors 2,3
+	set phlat45 [expr 23.9/2.0 +6.28 +18.17/2.0];	# lateral dist from beam-col joint to loc of hinge on floors 4,5(roof)
+
+# define NODAL COORDINATES for beam-column joints
+	# node ID: "xy" where x = floor, y = pier/bay
+	# Ground floor
+	node 11 0.0 0.0;
+	node 12 $LBay 0.0;
+	node 13 [expr 2.0*$LBay] 0.0;
+	node 14 [expr 3.0*$LBay] 0.0;
+	# Level 2
+	node 21 0.0 $Hstory1;
+	node 22 $LBay $Hstory1;
+	node 23 [expr 2.0*$LBay] $Hstory1;
+	node 24 [expr 3.0*$LBay] $Hstory1;
+	# Level 3
+	node 31 0.0 [expr $Hstory1+$HstoryTyp];
+	node 32 $LBay [expr $Hstory1+$HstoryTyp];
+	node 33 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 34 [expr 3.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	# Splice location between L3 and L4
+	node 31500 0.0 [expr $Hstory1+1.5*$HstoryTyp];
+	node 32500 $LBay [expr $Hstory1+1.5*$HstoryTyp];
+	node 33500 [expr 2.0*$LBay] [expr $Hstory1+1.5*$HstoryTyp];
+	# Level 4
+	node 41 0.0 [expr $Hstory1+2.0*$HstoryTyp];
+	node 42 $LBay [expr $Hstory1+2.0*$HstoryTyp];
+	node 43 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 44 [expr 3.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	# Roof
+	node 51 0.0 $HBuilding;
+	node 52 $LBay $HBuilding;
+	node 53 [expr 2.0*$LBay] $HBuilding;
+	node 54 [expr 3.0*$LBay] $HBuilding;
+
+#define extra nodes for PH springs
+	# node ID: "xya" where x = floor, y = pier/bay, a = location relative to beam-col joint:
+	# xy1, xy2 = ph loc in beam left of joint
+	# xy3, xy4 = ph loc in beam rightt of joint
+	# xy5, xy6 = ph loc in column below joint
+	# xy7, xy8 = ph loc in column above joint
+	# for centerline model, 6 and 7 are not used because spring connects column to beam-col joint directly
+
+	#around support nodes - hinge forms at base
+	node 117 0.0 0.0;
+	node 127 $LBay 0.0;
+	node 137 [expr 2.0*$LBay] 0.0;
+
+	#around node 21 0.0 $Hstory1;
+	node 213 $phlat23 $Hstory1;
+	node 214 $phlat23 $Hstory1;
+	node 215 0.0 [expr $Hstory1-$phvert23];
+	node 216 0.0 [expr $Hstory1-$phvert23];
+	node 217 0.0 [expr $Hstory1+$phvert23];
+	node 218 0.0 [expr $Hstory1+$phvert23];
+
+	#around node 22 $LBay $Hstory1;
+	node 221 [expr $LBay-$phlat23] $Hstory1;
+	node 222 [expr $LBay-$phlat23] $Hstory1;
+	node 223 [expr $LBay+$phlat23] $Hstory1;
+	node 224 [expr $LBay+$phlat23] $Hstory1;
+	node 225 $LBay [expr $Hstory1-$phvert23];
+	node 226 $LBay [expr $Hstory1-$phvert23];
+	node 227 $LBay [expr $Hstory1+$phvert23];
+	node 228 $LBay [expr $Hstory1+$phvert23];
+
+	#around node 23 [expr 2.0*$LBay] $Hstory1;
+	node 231 [expr 2.0*$LBay-$phlat23] $Hstory1;
+	node 232 [expr 2.0*$LBay-$phlat23] $Hstory1;
+	node 235 [expr 2.0*$LBay] [expr $Hstory1-$phvert23];
+	node 236 [expr 2.0*$LBay] [expr $Hstory1-$phvert23];
+	node 237 [expr 2.0*$LBay] [expr $Hstory1+$phvert23];
+	node 238 [expr 2.0*$LBay] [expr $Hstory1+$phvert23];
+
+	#around node 31 0.0 [expr $Hstory1+$HstoryTyp];
+	node 313 [expr 0.0+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 314 [expr 0.0+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 315 [expr 0.0] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 316 [expr 0.0] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 317 [expr 0.0] [expr $Hstory1+$HstoryTyp+$phvert23];
+	node 318 [expr 0.0] [expr $Hstory1+$HstoryTyp+$phvert23];
+
+	#around node 32 $LBay [expr $Hstory1+$HstoryTyp];
+	node 321 [expr $LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 322 [expr $LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 323 [expr $LBay+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 324 [expr $LBay+$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 325 $LBay [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 326 $LBay [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 327 $LBay [expr $Hstory1+$HstoryTyp+$phvert23];
+	node 328 $LBay [expr $Hstory1+$HstoryTyp+$phvert23];
+
+	#around node 33 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 331 [expr 2.0*$LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 332 [expr 2.0*$LBay-$phlat23] [expr $Hstory1+$HstoryTyp];
+	node 335 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 336 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp-$phvert23];
+	node 337 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp+$phvert23];
+	node 338 [expr 2.0*$LBay] [expr $Hstory1+$HstoryTyp+$phvert23];
+
+	#around node 41 0.0 [expr $Hstory1+2.0*$HstoryTyp];
+	node 413 [expr 0.0+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 414 [expr 0.0+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 415 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 416 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 417 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+	node 418 [expr 0.0] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+
+	#around node 42 $LBay [expr $Hstory1+2.0*$HstoryTyp];
+	node 421 [expr $LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 422 [expr $LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 423 [expr $LBay+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 424 [expr $LBay+$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 425 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 426 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 427 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+	node 428 [expr $LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+
+	#around node 43 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 431 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 432 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+2.0*$HstoryTyp];
+	node 435 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 436 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp-$phvert45];
+	node 437 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+	node 438 [expr 2.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp+$phvert45];
+
+	#around node 51 0.0 [expr $Hstory1+3.0*$HstoryTyp];
+	node 513 [expr 0.0+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 514 [expr 0.0+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 515 [expr 0.0] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+	node 516 [expr 0.0] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+
+	#around node 52 $LBay [expr $Hstory1+3.0*$HstoryTyp];
+	node 521 [expr $LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 522 [expr $LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 523 [expr $LBay+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 524 [expr $LBay+$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 525 [expr $LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+	node 526 [expr $LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+
+	#around node 53 [expr 2.0*$LBay] [expr $Hstory1+3.0*$HstoryTyp];
+	node 531 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 532 [expr 2.0*$LBay-$phlat45] [expr $Hstory1+3.0*$HstoryTyp];
+	node 535 [expr 2.0*$LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+	node 536 [expr 2.0*$LBay] [expr $Hstory1+3.0*$HstoryTyp-$phvert45];
+
+	#extra nodes for zero-stiffness springs in leaning column
+	node 246 [expr 3.0*$LBay] $Hstory1; # for spring in lower column
+	node 247 [expr 3.0*$LBay] $Hstory1; # for spring in upper column
+	node 346 [expr 3.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 347 [expr 3.0*$LBay] [expr $Hstory1+$HstoryTyp];
+	node 446 [expr 3.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 447 [expr 3.0*$LBay] [expr $Hstory1+2.0*$HstoryTyp];
+	node 546 [expr 3.0*$LBay] $HBuilding;
+
+# BOUNDARY CONDITIONS
+	# fix node dx dy r; 1=fixed, 0=free
+	fix 11 1 1 1;		
+	fix 12 1 1 1;
+	fix 13 1 1 1;
+	fix 14 1 1 0;	# P-delta column is pinned
+
+###################################################################################################
+#                                  Define Elements
+###################################################################################################
+# define MATERIAL properties
+	set Fy 50.0;				# steel yield strength
+	set Es 29000.0;				# Steel Young's Modulus
+
+# Stiffness modifications
+	set n 10.0;				# stiffness multiplier for spring elements
+	#for elastic elements, use 4, 4, 2 for K11, K33, K44
+	# Stiffness Coefficients as a function of n for element with 2 springs at the ends
+	set K44 [expr 6.0*(1.0+$n)/(2.0+3.0*$n)] ;
+	set K11 [expr (1.0+2.0*$n)*$K44/(1.0+$n)] ;
+	set K33 [expr (1.0+2.0*$n)*$K44/(1.0+$n)] ;
+	# Stiffness Coefficients as a function of n for element with 1 spring at the end (i.e., spliced columns)
+	# input is ... $K11_1 $K33_1 $K44_1 ... for spring at node i
+	# input is ... $K33_1 $K11_1 $K44_1 ... for spring at node j
+	set K44_1 [expr 2.0*($n)/(1.0/3.0 + $n)];
+	set K11_1 [expr 2.0*$K44_1];
+	set K33_1 [expr (1.0+2.0*$n)*$K44_1/(1.0+$n)];
+
+# Element properties
+	# Column section W24x131, story 1, 2, 3.5
+	set Acol12 38.5;						# cross-sectional area
+	set Ic12 4020.0;						# moment of inertia
+	set Ic12mod [expr $Ic12*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Mycol12 20350.0;					# yield moment
+	set Kcol1 [expr $n*6.0*$Es*$Ic12mod/($Hstory1-$phvert23)];				# rot stiffness of 1st story column spring
+	set Kcol2 [expr $n*6.0*$Es*$Ic12mod/($HstoryTyp-2.0*$phvert23)];		# rot stiffness of 2nd story column spring
+	set KspliceLow [expr $n*3.0*$Es*$Ic12mod/(0.5*$HstoryTyp-$phvert23)];	# rot stiffness of lower 3rd story (spliced) column spring
+
+	# Column section W24x76, story 3.5, 4
+	set Acol34 22.4;						# cross-sectional area
+	set Ic34 2100.0;						# moment of Inertia
+	set Ic34mod [expr $Ic34*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Mycol34 11000.0;					# yield moment
+	set Kcol34 [expr $n*6.0*$Es*$Ic34mod/($HstoryTyp-2.0*$phvert45)];			# rot stiffness of 4th story column springs
+	set KspliceUp [expr $n*3.0*$Es*$Ic34mod/(0.5*$HstoryTyp-$phvert45)];		# rot stiffness of upper 3rd story (spliced) column spring
+
+	# Beam section W27x102, floor 2, 3
+	set Ab23 30.0;							# cross-sectional area
+	set Ib23 3620.0;						# moment of Inertia
+	set Ib23mod [expr $Ib23*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Myb23 10938.0;						# yield moment
+	set Kb23 [expr $n*6.0*$Es*$Ib23mod/($LBay-2.0*$phlat23)];	# rot stiffness of 2,3 floor beam springs
+
+	# Beam section W21x93, floor 4, 5
+	set Ab45 27.3;							# cross-sectional area
+	set Ib45 2070.0;						# moment of Inertia
+	set Ib45mod [expr $Ib45*($n+1.0)/$n];	# modified moment of inertia for elastic element
+	set Myb45 7930.0;						# yield moment
+	set Kb45 [expr $n*6.0*$Es*$Ib45mod/($LBay-2.0*$phlat45)];	# rot stiffness of 4,5 floor beam springs
+
+# set up geometric transformations of element
+	set transfTag 1;
+	geomTransf PDelta $transfTag; 	# PDelta transformation
+
+#define spring properties and create spring elements
+	#Spring ID: "3xyab", where 3=spring, x=floor, y=pier/bay, ab = dir from node: 12=left,34=right,5=below,8=above
+	#rotSpring2DModIKModel	id    ndR  ndC     K   asPos  asNeg  MyPos      MyNeg      LS    LK    LA    LD   cS   cK   cA   cD  th_p+   th_p-   th_pc+   th_pc-  Res+   Res-   th_u+   th_u-    D+     D-
+	# define spring model
+	source rotSpring2DModIKModel.tcl;		# Source to define rotational zero-length element with degradation
+
+	# define deterioration parameters for springs (Table 6.1, p 252 of D's thesis)
+	set McMy 1.05;			# ratio of capping moment to yield moment, Mc / My
+	set LS 1.5;				# basic strength deterioration
+	set LK 1.5;				# unloading stiffness deterioration
+	set LA 1.5;				# accelerated reloading stiffness deterioration
+	set LD 1.5;				# post-capping strength deterioration
+	set cS 1.0;				# exponent for basic strength deterioration
+	set cK 1.0;				# exponent for unloading stiffness deterioration
+	set cA 1.0;				# exponent for accelerated reloading stiffness deterioration
+	set cD 1.0;				# exponent for post-capping strength deterioration
+	set th_pP 0.025;		# plastic rot capacity for pos loading
+	set th_pN 0.025;		# plastic rot capacity for neg loading
+	set th_pcP 0.3;			# post-capping rot capacity for pos loading
+	set th_pcN 0.3;			# post-capping rot capacity for neg loading
+	set ResP 0.4;			# residual strength ratio for pos loading
+	set ResN 0.4;			# residual strength ratio for neg loading
+	set th_uP 0.4;			# ultimate rot capacity for pos loading
+	set th_uN 0.4;			# ultimate rot capacity for neg loading
+	set DP 1.0;				# rate of cyclic deterioration for pos loading
+	set DN 1.0;				# rate of cyclic deterioration for neg loading
+	set a_mem [expr ($n+1.0)*($Mycol12*($McMy-1.0)) / ($Kcol1*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];       					# modified Strain Hardening ratio of spring (Ibarra 2003, note: there is mistake in Ibarra eqn B.5)
+
+# define column springs
+	# master node must be specified first for rotSpring2DModIKModel
+	#rotSpring2DModIKModel	id   ndR  ndC  K  asPos  asNeg  MyPos      MyNeg    LS  LK  LA   LD  cS  cK  cA  cD th_p+  th_p-  th_pc+   th_pc-  Res+  Res- th_u+  th_u-  D+  D-
+	#col springs at base
+	rotSpring2DModIKModel  31178  11 117 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  31278  12 127 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  31378  13 137 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	#col springs below 2nd floor
+	rotSpring2DModIKModel  32156  216 215 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32256  226 225 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32356  236 235 $Kcol1 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set a_mem [expr ($n+1.0)*($Mycol12*($McMy-1.0)) / ($Kcol2*$th_pP)];		# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        					# modified Strain Hardening ratio of spring
+	#col springs above 2nd floor
+	rotSpring2DModIKModel 32178 217 218 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 32278 227 228 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 32378 237 238 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#col springs below 3rd floor
+	rotSpring2DModIKModel 33156 316 315 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33256 326 325 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33356 336 335 $Kcol2 $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set a_mem [expr ($n+1.0)*($Mycol12*($McMy-1.0)) / ($KspliceLow*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        						# modified Strain Hardening ratio of spring
+	#col springs above 3rd floor (spliced)
+	rotSpring2DModIKModel 33178 317 318 $KspliceLow $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33278 327 328 $KspliceLow $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel 33378 337 338 $KspliceLow $b $b $Mycol12 [expr -$Mycol12] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set th_pcP 0.35;
+	set th_pcN 0.35;
+	set a_mem [expr ($n+1.0)*($Mycol34*($McMy-1.0)) / ($KspliceUp*$th_pP)];		# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        						# modified Strain Hardening ratio of spring
+	#col springs below 4th floor (spliced)
+	rotSpring2DModIKModel  34156  416  415   $KspliceUp $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34256  426  425   $KspliceUp $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34356  436  435   $KspliceUp $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set a_mem [expr ($n+1.0)*($Mycol34*($McMy-1.0)) / ($Kcol34*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        					# modified Strain Hardening ratio of spring
+	#col springs above 4th floor	     
+	rotSpring2DModIKModel  34178  417  418   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34278  427  428   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34378  437  438   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#col springs below 5th floor
+	rotSpring2DModIKModel  35156  516  515   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35256  526  525   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35356  536  535   $Kcol34 $b $b $Mycol34 [expr -$Mycol34] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	#define region tag for col springs to be used for recorders
+	region 620 -ele 31178 31278 31378 32156 32256 32356 32178 32278 32378 33156 33256 33356 33178 33278 33378 34156 34256 34356 34178 34278 34378 35156 35256 35356
+
+# define beam springs
+	set th_pP 0.02;
+	set th_pN 0.02;
+	set th_pcP 0.16;
+	set th_pcN 0.16;
+	set a_mem [expr ($n+1.0)*($Myb23*($McMy-1.0)) / ($Kb23*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        				# modified Strain Hardening ratio of spring
+	#beam springs at floor 2
+	rotSpring2DModIKModel  32134  213   214   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32212  221   222   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32234  223   224   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  32312  231   232   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#beam springs at floor 3
+	rotSpring2DModIKModel  33134  313   314   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  33212  321   322   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  33234  323   324   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  33312  331   332   $Kb23 $b $b $Myb23 [expr -$Myb23] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	set LS 1.9;
+	set LK 1.9;
+	set LA 1.9;
+	set LD 1.9;
+	set th_pP 0.025;
+	set th_pN 0.025;
+	set th_pcP 0.19;
+	set th_pcN 0.19;
+	set a_mem [expr ($n+1.0)*($Myb45*($McMy-1.0)) / ($Kb45*$th_pP)];	# strain hardening ratio of member
+	set b [expr ($a_mem)/(1.0+$n*(1.0-$a_mem))];        				# modified Strain Hardening ratio of spring
+	#beam springs at floor 4
+	rotSpring2DModIKModel  34134  413   414   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34212  421   422   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34234  423   424   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  34312  431   432   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	#beam springs at floor 5
+	rotSpring2DModIKModel  35134  513   514   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35212  521   522   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35234  523   524   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+	rotSpring2DModIKModel  35312  531   532   $Kb45 $b $b $Myb45 [expr -$Myb45] $LS $LK $LA $LD $cS $cK $cA $cD $th_pP $th_pN $th_pcP $th_pcN $ResP $ResN $th_uP $th_uN $DP $DN;
+
+	#Define Region Tag for MRF beam springs to be used for recorders
+	region 625 -ele 32134 32212 32234 32312 33134 33212 33234 33312 34134 34212 34234 34312 35134 35212 35234 35312
+
+# Define Beam-Column Elements
+# define columns
+	# element elasticBeamColumn $eleTag $iNode $jNode $A $E $Iz $transfTag
+	# Col ID:  "1xy" where 1=col, x=story, y=bay/pier
+	# Columns Story 1
+	element ModElasticBeam2d  111  117 215 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1112 216 21  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  112  127 225 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1122 226 22  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  113  137 235 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1132 236 23  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	# Columns Story 2
+	element ModElasticBeam2d  1211 21  217 $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  121  218 315 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1212 316 31  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1221 22  227 $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  122  228 325 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1222 326 32  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1231 23  237 $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  123  238 335 $Acol12 $Es $Ic12mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1232 336 33  $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+
+	# Columns Story 3 -- spliced columns ("1xy499" = lower section in splice)
+	element ModElasticBeam2d  1311 31  317   $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  131499  318 31500 $Acol12 $Es $Ic12mod $K11_1 $K33_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  131500  31500 415 $Acol34 $Es $Ic34mod $K33_1 $K11_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  1312 416  41   $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1321 32  327   $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  132499  328 32500 $Acol12 $Es $Ic12mod $K11_1 $K33_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  132500  32500 425 $Acol34 $Es $Ic34mod $K33_1 $K11_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  1322 426  42   $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1331 33  337   $Acol12 $Es $Ic12 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  133499  338 33500 $Acol12 $Es $Ic12mod $K11_1 $K33_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  133500  33500 435 $Acol34 $Es $Ic34mod $K33_1 $K11_1 $K44_1 $transfTag;
+	element ModElasticBeam2d  1332 436  43   $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	# Columns Story 4
+	element ModElasticBeam2d  1411 41  417 $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  141  418 515 $Acol34 $Es $Ic34mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1412 516 51  $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1421 42  427 $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  142  428 525 $Acol34 $Es $Ic34mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1422 526 52  $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+	element ModElasticBeam2d  1431 43  437 $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+	element ModElasticBeam2d  143  438 535 $Acol34 $Es $Ic34mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d  1432 536 53  $Acol34 $Es $Ic34 4.0 4.0 2.0 $transfTag;
+
+# define beams
+	# Beam ID:  "2xya" where 2=beam, x=story, y=bay/pier, a=1 for left section and a=2 for right (both elastic elements)
+	# for the middle portion of the beam, which has springs at each end, there is no "a" term (i.e., ID = "2xy")
+	# Beams Floor 2
+	element ModElasticBeam2d 2211 21  213 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 221  214 221 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2212 222 22  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2221 22  223 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 222  224 231 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2222 232 23  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	# Beams Floor 3
+	element ModElasticBeam2d 2311 31  313 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 231  314 321 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2312 322 32  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2321 32  323 $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 232  324 331 $Ab23 $Es $Ib23mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2322 332 33  $Ab23 $Es $Ib23 4.0  4.0  2.0  $transfTag;
+	# Beams Floor 4
+	element ModElasticBeam2d 2411 41  413 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 241  414 421 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2412 422 42  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2421 42  423 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 242  424 431 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2422 432 43  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	# Beams Floor 5
+	element ModElasticBeam2d 2511 51  513 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 251  514 521 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2512 522 52  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 2521 52  523 $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+	element ModElasticBeam2d 252  524 531 $Ab45 $Es $Ib45mod $K11 $K33 $K44 $transfTag;
+	element ModElasticBeam2d 2522 532 53  $Ab45 $Es $Ib45 4.0  4.0  2.0  $transfTag;
+
+
+
+# define leaning column elements
+	# elem ID start with "600xxx" so that damping is not applied to them
+	set TrussMatTag 13;
+	set Atruss 1000.0;
+	uniaxialMaterial Elastic $TrussMatTag $Es;
+	# element truss $eleTag $iNode $jNode $A $matTag
+# rigid link beam elements
+	element truss  600223 23 24 $Atruss $TrussMatTag;
+	element truss  600233 33 34 $Atruss $TrussMatTag;
+	element truss  600243 43 44 $Atruss $TrussMatTag;
+	element truss  600253 53 54 $Atruss $TrussMatTag;
+
+# leaning columns  
+	set Ipd 1000.0;  #moment of inertia for leaning columns
+	# K44 = 0.0 to remove rotational restraint
+	# element elasticBeamColumn $eleTag $iNode $jNode $A $E $Iz $K11 $K33 $K44 $transfTag
+	element ModElasticBeam2d  600114 14  246 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+	element ModElasticBeam2d  600124 247 346 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+	element ModElasticBeam2d  600134 347 446 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+	element ModElasticBeam2d  600144 447 546 $Atruss $Es $Ipd 4.0  4.0  0.0  $transfTag;
+
+# zero-stiffness elastic springs for leaning column
+	source rotLeaningCol.tcl;
+	# Spring ID: "650xya" where 650=leaning column spring; x=floor; y=pier; a=6 for lower col, a=7 for upper column
+	#     		  ElemID  ndR  ndC 
+	rotLeaningCol 650246  24   246;
+	rotLeaningCol 650247  24   247;
+	rotLeaningCol 650346  34   346;
+	rotLeaningCol 650347  34   347;
+	rotLeaningCol 650446  44   446;
+	rotLeaningCol 650447  44   447;
+	rotLeaningCol 650546  54   546;
+# display model
+	#DisplayModel2D NodeNumbers
+	#after 10000 #waits so that node numbers can be read
+
+
+
+############################################################################
+#                       Assign Mass to Nodes                   			   #
+############################################################################
+	# mass $nodeID $MassNode 0.0 0.0;
+	# mass assigned to frame nodes only
+	set mneglig 1.0e-9;
+	set roofmass [expr 1200.0/(386.2*2.0*3.0)];
+	set L4mass [expr 1050.0/(386.2*2.0*3.0)];
+	set L3mass [expr 1050.0/(386.2*2.0*3.0)];
+	set L2mass [expr 1070.0/(386.2*2.0*3.0)];
+
+	# Mass on Roof
+	mass 53 $roofmass $mneglig 0.0;
+	mass 52 $roofmass $mneglig 0.0;
+	mass 51 $roofmass $mneglig 0.0;
+	# Mass on Level 4
+	mass 43 $L4mass $mneglig 0.0;
+	mass 42 $L4mass $mneglig 0.0;
+	mass 41 $L4mass $mneglig 0.0;
+	# Mass on Level 3
+	mass 33 $L3mass $mneglig 0.0;
+	mass 32 $L3mass $mneglig 0.0;
+	mass 31 $L3mass $mneglig 0.0;
+	# Mass on Level 2
+	mass 23 $L2mass $mneglig 0.0;
+	mass 22 $L2mass $mneglig 0.0;
+	mass 21 $L2mass $mneglig 0.0;
+
+############################################################################
+#                       Eigenvalue Analysis                    			   #
+############################################################################
+	set pi [expr 2.0*asin(1.0)];              			# Definition of pi
+	set nEigenI 1;										# mode i = 1
+	set nEigenJ 3;										# mode j = 3
+	set nEigen2 2;										# mode 2
+	set lambdaN [eigen [expr $nEigenJ]];				# eigenvalue analysis for nEigenJ modes
+	set lambdaI [lindex $lambdaN [expr $nEigenI-1]]; 	# eigenvalue mode i
+	set lambdaJ [lindex $lambdaN [expr $nEigenJ-1]]; 	# eigenvalue mode j
+	set lambda2 [lindex $lambdaN [expr $nEigen2-1]]; 	# eigenvalue mode 2
+	set w1 [expr pow($lambdaI,0.5)];					# w1 (1st mode circular frequency)
+	set w3 [expr pow($lambdaJ,0.5)];					# w3 (3rd mode circular frequency)
+	set w2 [expr pow($lambda2,0.5)];					# w2 (2nrd mode circular frequency)
+	set T1 [expr 2.0*$pi/$w1];      					# Define the 1st mode period of the structure
+	set T3 [expr 2.0*$pi/$w3];      					# Define the 3rd mode period of the structure
+	set T2 [expr 2.0*$pi/$w2];      					# Define the 3rd mode period of the structure
+	puts "T1 = $T1 s"
+	puts "T2 = $T2 s"
+	puts "T3 = $T3 s"
+
+############################################################################
+#              Gravity Loads & Gravity Analysis                			   #
+############################################################################
+# Apply gravity loads
+	pattern Plain 101 Constant {
+		
+		# Point loads on leaning column nodes
+		load 24 0.0 [expr -398.02] 0.0;
+		load 34 0.0 [expr -391.31] 0.0;
+		load 44 0.0 [expr -393.83] 0.0;
+		load 54 0.0 [expr -479.50] 0.0;
+		
+		# Point loads on frame column nodes
+		set Proof [expr -40.17];
+		set P_L4 [expr -43.72];
+		set P_L3 [expr -44.56];
+		set P_L2 [expr -45.66];
+
+		# load on Roof
+		load 53 0.0 $Proof 0.0;
+		load 52 0.0 $Proof 0.0;
+		load 51 0.0 $Proof 0.0;
+		# load on Level 4
+		load 43 0.0 $P_L4 0.0;
+		load 42 0.0 $P_L4 0.0;
+		load 41 0.0 $P_L4 0.0;
+		# load on Level 3
+		load 33 0.0 $P_L3 0.0;
+		load 32 0.0 $P_L3 0.0;
+		load 31 0.0 $P_L3 0.0;
+		# load on Level 2
+		load 23 0.0 $P_L2 0.0;
+		load 22 0.0 $P_L2 0.0;
+		load 21 0.0 $P_L2 0.0;
+	}
+
+# Gravity-analysis: load-controlled static analysis
+	set Tol 1.0e-6;							# convergence tolerance for test
+	variable constraintsTypeGravity Plain;	# default;
+	constraints $constraintsTypeGravity ;   # how it handles boundary conditions
+	numberer RCM;							# renumber dof's to minimize band-width (optimization), if you want to
+	system BandGeneral ;					# how to store and solve the system of equations in the analysis (large model: try UmfPack)
+	test NormDispIncr $Tol 6 ; 				# determine if convergence has been achieved at the end of an iteration step
+	algorithm Newton;						# use Newton's solution algorithm: updates tangent stiffness at every iteration
+	set NstepGravity 10;  					# apply gravity in 10 steps
+	set DGravity [expr 1.0/$NstepGravity]; 	# first load increment;
+	integrator LoadControl $DGravity;		# determine the next time step for an analysis
+	analysis Static;						# define type of analysis static or transient
+	analyze $NstepGravity;					# apply gravity
+
+	# maintain constant gravity loads and reset time to zero
+	loadConst -time 0.0
+	puts "Model Built"
+
+############################################################################
+#              Recorders					                			   #
+############################################################################
+
+	# Record envelope & history of Displacement time histories (All floors in the same file)
+	#recorder EnvelopeNode -file Displacement-Env.out -node 21 31 41 51 -dof 1 disp
+	#recorder Node -file Displacement-History.out -time -node 21 31 41 51 -dof 1 disp
+	#recorder Node -file $dispHistDir/C99tcu116N.th-DispHist-SF-0.000043.out -time -node 21 31 41 51 -dof 1 disp	
+	
+	# Record Relative Acceleration time histories All in the same file
+	#recorder Node -file RelAccel-History.out -time -node 21 31 41 51 -dof 1 accel
+
+	# #Record envelope of Relative Velocity time histories ALL in the same file
+	# recorder EnvelopeNode -file Velocity-History.out -time -node 21 31 41 51 -dof 1 vel
+	
+	# Record Story Drift Histories
+	recorder Drift -file temp/CollapseS1.out -time -iNode 11 -jNode 21 -dof 1 -perpDirn 2
+	recorder Drift -file temp/CollapseS2.out -time -iNode 21 -jNode 31 -dof 1 -perpDirn 2
+	recorder Drift -file temp/CollapseS3.out -time -iNode 31 -jNode 41 -dof 1 -perpDirn 2
+        recorder Drift -file temp/CollapseS4.out -time -iNode 41 -jNode 51 -dof 1 -perpDirn 2
+	recorder Drift -file temp/CollapseRoof.out -time -iNode 11 -jNode 51 -dof 1 -perpDirn 2
+	
+	# Recorded Column Forces per Story in Global Coordinates (for Story Shear)
+	#recorder Element -file ColForce-Story1.out -time -ele 111 112 113 600114 force;
+	#recorder Element -file ColForce-Story2.out -time -ele 121 122 123 600124 force;
+	#recorder Element -file ColForce-Story4.out -time -ele 141 142 143 600144 force;
+	
+	# # Recorded envelope of Column Forces per Story in Local Coordinates (for Axial Load in MRF Columns)
+	# recorder EnvelopeElement -file ColAxialForce1.out -time -ele 111 113 localForce;
+	# recorder EnvelopeElement -file ColAxialForce2.out -time -ele 121 123 localForce;
+	# recorder EnvelopeElement -file ColAxialForce3.out -time -ele 131499 133499 localForce;
+	# recorder EnvelopeElement -file ColAxialForce4.out -time -ele 141 143 localForce;
+	
+	#Record envelope of MRF Column Spring Responses in one file
+	#recorder EnvelopeElement -file MRFcolSpring-Force-Env.out -region 620 force
+	#recorder EnvelopeElement -file MRFcolSpring-Deformation-Env.out -region 620 deformation
+	
+	#Record envelope of MRF Beam Spring Responses in one file
+	#recorder EnvelopeElement -file MRFbeamSpring-Force-Env.out -region 625 force
+	#recorder EnvelopeElement -file MRFbeamSpring-Deformation-Env.out -region 625 deformation
+
+#######################################################################################
+#                                                                                     #
+#                               4.Dynamic Analysis commands                           #
+#                                                                                     #
+########################################################################################
+# parameters for ground motion
+	                                                                      ####### CHANGE GM DATA ############    
+	set Scalefact $newScaleFactor;# Scale factor of ground motion
+
+# parameters for wind
+	set dt 0.1000000;				# Time step for ground motion
+	set dtAn [expr 0.1*$dt];	# initial analysis time step
+set force_Node21 "test_force_21.txt";	# Wind force at node 21 file name
+set force_Node23 "test_force_23.txt";	# Wind force at node 23 file name
+set force_Node31 "test_force_31.txt";	# Wind force at node 31 file name
+set force_Node33 "test_force_33.txt";	# Wind force at node 33 file name
+set force_Node41 "test_force_41.txt";	# Wind force at node 41 file name
+set force_Node43 "test_force_43.txt";	# Wind force at node 43 file name
+set force_Node51 "test_force_51.txt";	# Wind force at node 51 file name
+set force_Node53 "test_force_53.txt";	# Wind force at node 53 file name
+	set numGMpts 30000.000000;	# number of steps in wind
+	set GMtime [expr $dt*$numGMpts + 20.0];	# total time of ground motion + residual time (for residual SDRs)
+	puts "Scale Factor = $Scalefact"
+	
+	# Assign Parameters to wind
+timeSeries Path 1 -dt $dt -filePath $force_Node21 -factor [expr pow($Scalefact,2)]
+timeSeries Path 2 -dt $dt -filePath $force_Node23 -factor [expr pow($Scalefact,2)]
+timeSeries Path 3 -dt $dt -filePath $force_Node31 -factor [expr pow($Scalefact,2)]
+timeSeries Path 4 -dt $dt -filePath $force_Node33 -factor [expr pow($Scalefact,2)]
+timeSeries Path 5 -dt $dt -filePath $force_Node41 -factor [expr pow($Scalefact,2)]
+timeSeries Path 6 -dt $dt -filePath $force_Node43 -factor [expr pow($Scalefact,2)]
+timeSeries Path 7 -dt $dt -filePath $force_Node51 -factor [expr pow($Scalefact,2)]
+timeSeries Path 8 -dt $dt -filePath $force_Node53 -factor [expr pow($Scalefact,2)]
+pattern Plain 1 1 {
+load 21 1.0 0.0 0.0
+}
+pattern Plain 2 2 {
+load 23 1.0 0.0 0.0
+}
+pattern Plain 3 3 {
+load 31 1.0 0.0 0.0
+}
+pattern Plain 4 4 {
+load 33 1.0 0.0 0.0
+}
+pattern Plain 5 5 {
+load 41 1.0 0.0 0.0
+}
+pattern Plain 6 6 {
+load 43 1.0 0.0 0.0
+}
+pattern Plain 7 7 {
+load 51 1.0 0.0 0.0
+}
+pattern Plain 8 8 {
+load 53 1.0 0.0 0.0
+}
+
+	
+	
+	
+# Rayleigh Damping
+	set zeta 0.02;
+	set a0 [expr $zeta*2.0*$w1*$w3/($w1 + $w3)];	# mass damping coeff
+	set a1 [expr $zeta*2.0/($w1 + $w3)];			# stiffness damping coeff
+	set a1_mod [expr $a1*(1.0+$n)/$n];				# modified stiffness damping coeff for n modified elements
+	set a1_splice [expr $a1*(1.0+ 1.0/(2.0*$n))];	# modified stiffness damping coeff for spliced columns
+
+	region 1 -eleRange 1 999 -rayleigh 0.0 0.0 $a1_mod 0.0;	# assign stiffness propor damping to el beams & col w/ n modifications
+	region 2 -eleRange 1000 9999 -rayleigh 0.0 0.0 $a1 0.0;	# assign stiffness propor damping to el beams w/out n modifications
+	region 3 -eleRange 100000 199999 -rayleigh 0.0 0.0 $a1_splice 0.0;	# assign stiffness propor damping to spliced columns w/ n modifications
+	region 4 -node 21 22 23 31 32 33 41 42 43 51 52 53 -rayleigh $a0 0.0 0.0 0.0;	# assign mass proportional damping to nodes with mass
+	
+# Call Dynamic Analysis Solver and run for collapse tracing
+	source DynamicAnalysisCollapseSolverHurricane.tcl
+	set FloorNodes [ list 21 31 41 51];		# list of floor nodes for drift monitoring
+	set currentTime [getTime]	
+	#                            input Motion  simul. step  duration numStories Drift Limit    List Nodes    StoryH 1   StoryH Typical
+	DynamicAnalysisCollapseSolverHurricane $dt $dtAn $GMtime $NStories 0.20 $FloorNodes $Hstory1 $HstoryTyp
+	set currentTime [getTime]
+	puts "The CurrentTime was: $currentTime"
+
+if {$CollapseFlag == "YES"} {
+set scaleFactorUpper $newScaleFactor
+set oldScaleFactor $newScaleFactor
+set tolerance [expr abs($oldScaleFactor-0.5*$scaleFactorUpper-0.5*$scaleFactorLower)]
+} else {
+set scaleFactorLower $newScaleFactor
+set oldScaleFactor $newScaleFactor
+#set tolerance [expr abs($oldScaleFactor-0.5*$scaleFactorUpper-0.5*$scaleFactorLower)]
+}
+}
+puts "Collapse scale factor is $newScaleFactor with an error of order 0.003"
+}
+
+
+
+
+
+
