@@ -25,7 +25,7 @@
 # 15 May 2012:	used dtAnalysis = 0.1*dtGM and 20s of free vibration
 
 set fileNumber 0;
-for {set i 1} {$i <= 44} {incr i} {
+for {set i 1} {$i <= 38} {incr i} {
 
 
 
@@ -46,20 +46,20 @@ file mkdir $dispHistDir; 			# create folder for story displacement histories
 set fileNumber 1
 #[expr $fileNumber+1]
 
-set GmRecordNum $i
-set filename "GmRecordNum1.txt"
+set HurricaneNum $i
+set filename "HurricaneNum.txt"
 set fileId [open $filename "w"]
-puts -nonewline $fileId $GmRecordNum
+puts -nonewline $fileId $HurricaneNum
 close $fileId
 
 
-if {[catch {exec matlab -nosplash -nodesktop -r "Earthquake_prp; quit"}]} {
+if {[catch {exec matlab -nosplash -nodesktop -r "Waves_prp; quit"}]} {
     puts "Ignore this $msg"
     }
     source Sleep.tcl
     Sleep 20
 
-set Scalefact 1.0;
+set Scalefact 3.0;
 ###################################################################################################
 #          Define Building Geometry and Nodes													  
 ###################################################################################################
@@ -229,9 +229,9 @@ set Scalefact 1.0;
 
 # BOUNDARY CONDITIONS
 	 #fix node dx dy r; 1=fixed, 0=free
-	#fix 11 1 1 1;		
-	#fix 12 1 1 1;
-	#fix 13 1 1 1;
+	fix 11 1 1 1;		
+	fix 12 1 1 1;
+	fix 13 1 1 1;
 	fix 14 1 1 0;	# P-delta column is pinned
 
 ###################################################################################################
@@ -541,19 +541,6 @@ set Scalefact 1.0;
 	#after 10000 #waits so that node numbers can be read
 
 ############################################################################
-#                      Foundation properties                                       #
-############################################################################
-#ShallowFoundationGen 1 11 "input1.txt" 5
-
-#ShallowFoundationGen 2 12 "input1.txt" 5
-
-#ShallowFoundationGen 3 13 "input1.txt" 5
-source Foundation_3.tcl
-source Foundation_1.tcl
-source Foundation_2.tcl
-############################################################################
-
-############################################################################
 #                       Assign Mass to Nodes                   			   #
 ############################################################################
 	# mass $nodeID $MassNode 0.0 0.0;
@@ -670,15 +657,6 @@ set driftS1 "DriftStorey1_"
 set flacc "FloorAcc_"
 set flvel "FloorVel_"
 set jrot "JointRot_"
-set F1M_disp "F1M_disp"
-set F1L_disp "F1L_disp"
-set F1R_disp "F1R_disp"
-set F2M_disp "F2M_disp"
-set F2L_disp "F2L_disp"
-set F2R_disp "F2R_disp"
-set F3M_disp "F3M_disp"
-set F3L_disp "F3L_disp"
-set F3R_disp "F3R_disp"
 set fileroof [concat $driftroof$fileNumber]   
 set fileS4 [concat $driftS4$fileNumber]                                                                                                 
 set fileS3 [concat $driftS3$fileNumber]
@@ -687,15 +665,7 @@ set fileS1 [concat $driftS1$fileNumber]
 set fileacc [concat $flacc$fileNumber]
 set filevel [concat $flvel$fileNumber]
 set filerot [concat $jrot$fileNumber]
-set file1M [concat $F1M_disp$fileNumber]
-set file1L [concat $F1L_disp$fileNumber]
-set file1R [concat $F1R_disp$fileNumber]
-set file2M [concat $F2M_disp$fileNumber]
-set file2L [concat $F2L_disp$fileNumber]
-set file2R [concat $F2R_disp$fileNumber]
-set file3M [concat $F3M_disp$fileNumber]
-set file3L [concat $F3L_disp$fileNumber]
-set file3R [concat $F3R_disp$fileNumber]
+
 	
 	recorder Node -file Pushover/$filerot.out -time -node 32 -dof 3 disp
 		
@@ -709,45 +679,29 @@ set file3R [concat $F3R_disp$fileNumber]
     recorder Drift -file Pushover/$fileS4.out -time -iNode 41 -jNode 51 -dof 1 -perpDirn 2
 	recorder Drift -file Pushover/$fileroof.out -time -iNode 11 -jNode 51 -dof 1 -perpDirn 2
 	
-# Footing 1
-recorder Node -time -file Pushover/F1M_disp.out -node 1032 -dof 1 2 3 disp
-recorder Node -time -file Pushover/F1L_disp.out -node 1001 -dof 1 2 3 disp
-recorder Node -time -file Pushover/F1R_disp.out -node 1063 -dof 1 2 3 disp
-# Footing 2
-recorder Node -time -file Pushover/F2M_disp.out -node 2032 -dof 1 2 3 disp
-recorder Node -time -file Pushover/F2L_disp.out -node 2001 -dof 1 2 3 disp
-recorder Node -time -file Pushover/F2R_disp.out -node 2063 -dof 1 2 3 disp
-# Footing 3
-recorder Node -time -file Pushover/F3M_disp.out -node 3032 -dof 1 2 3 disp
-recorder Node -time -file Pushover/F3L_disp.out -node 3001 -dof 1 2 3 disp
-recorder Node -time -file Pushover/F3R_disp.out -node 3063 -dof 1 2 3 disp
-
 #######################################################################################
 #                                                                                     #
 #                               4.Dynamic Analysis commands                           #
 #                                                                                     #
 ########################################################################################
 # parameters for ground motion
-set fp [open "dT1.txt" r]
+set fp [open "dT_hurr.txt" r]
 set dt [read $fp]
 close $fp
-set fp [open "numGMPTS1.txt" r]
+set fp [open "numPTS_hurr.txt" r]
 set numGMpts [read $fp]
 close $fp
 	set dtAn [expr 0.1*$dt];	# initial analysis time step
-	set fileName "present_record1.txt";	# Ground motion name                                                                    ####### CHANGE GM DATA ############
-	# Scale factor of ground motion
-		# number of steps in ground motion
+	set fileName "present_record_hurr.txt";	# Ground motion name                                                                    ####### CHANGE GM DATA ############
 	set GMtime [expr $dt*$numGMpts + 20.0];	# total time of ground motion + residual time (for residual SDRs)
 	puts "Scale Factor = $Scalefact"
-	#set ViewScale 5;
-	#DisplayModel2D DeformedShape $ViewScale ;
-	# Assign Parameters to ground motion
-	#set accelSeries "Series -dt $dt -filePath $fileName -factor [expr $Scalefact*386.2]"
-timeSeries Path 1 -dt $dt -filePath $fileName -factor [expr $Scalefact*386.2]	
-set dir 1;	# Set direction of ground motion application 1 is translational                                                                
-	#pattern UniformExcitation 2 $dir -accel $accelSeries
-	pattern UniformExcitation 1 1 -accel 1;
+	
+	# Assign Parameters to wind
+timeSeries Path 1 -dt $dt -filePath $fileName -factor $Scalefact
+pattern Plain 1 1 {
+load 21 1.0 0.0 0.0
+}
+
 # Rayleigh Damping
 	set zeta 0.02;
 	set a0 [expr $zeta*2.0*$w1*$w3/($w1 + $w3)];	# mass damping coeff
@@ -777,7 +731,7 @@ set filename "Collapse Info.txt"
 set fileId [open $filename "w"]
 puts -nonewline $fileId $CollapseFlag
 close $fileId
-if {[catch {exec matlab -nosplash -nodesktop -r "Earthquake_pp; quit"}]} {
+if {[catch {exec matlab -nosplash -nodesktop -r "Waves_pp; quit"}]} {
    puts "Ignore this $msg"
    }
 Sleep 50
