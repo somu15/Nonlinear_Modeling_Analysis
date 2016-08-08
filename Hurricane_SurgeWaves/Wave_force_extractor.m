@@ -1,8 +1,9 @@
-clr
+function [time,Rreq,wave] = Wave_force_extractor(index)
 surge_dat = importdata('C:\Users\lakshd5\Dropbox\Preliminary Analysis paper\Hurricanes\Interpoated_surge_30.176376_-85.808370.txt');
-for ii = 1:max(size(surge_dat))
-    surge = surge_dat(ii);
-[time,wave,L] = Wave_Modelling(5+rand*2,surge);
+%for ii = 1:1%max(size(surge_dat))
+%ii = index;
+    surge = index;%surge_dat(ii);
+[time,wave,L] = Wave_Modelling(5.5,surge);%5+rand*2
 Hdes = max(wave);
 neu = 0.75*Hdes;
 a1 = 0.6+0.5*(4*pi*surge/L/sinh(4*pi*surge/L))^2;
@@ -20,6 +21,7 @@ H1 = surge;
 H3 = 0.75*wave;
 Lb = 4.6;
 RA = P1.*H1/Lb.*(H1/2+Lb-H1)+(P3-P1).*H1/(2*Lb).*(Lb-H1+H1/2)+P3.*H3/(2*Lb).*(2*H3/3+Lb-H1-H3);
-Rreq(:,ii) = (0.5*H1.*(P1+P3)+0.5*H3.*P3-RA)*13.65;
+Rreq = (0.5*H1.*(P1+P3)+0.5*H3.*P3-RA)*13.65;
+%end
 end
 %plot(time,Rreq*13.65)

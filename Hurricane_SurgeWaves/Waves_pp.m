@@ -1,8 +1,8 @@
-row = importdata('C:\Users\lakshd5\Documents\Tcl\bin\GmRecordNum1.txt')+1;
+row = importdata('C:\Users\lakshd5\Documents\Tcl\bin\HurricaneNum.txt')+1;
 %n = importdata('C:\Tcl\bin\recordNumber.txt');
 %start = strcat(char(row+'A'-1),'2');
 start = strcat('B',num2str(row));
-file_name = 'C:\Users\lakshd5\Dropbox\Preliminary Analysis paper\Earthquakes\Nonlinear SSI\Strip_footing_test_scale1.xlsx';
+file_name = 'C:\Users\lakshd5\Dropbox\Preliminary Analysis paper\Hurricanes\Surge\Nonlinear dynamic\Test_07252016\Responses_NoScour_3SF.xlsx';
 for i = 1:1
 file = strcat('C:\Users\lakshd5\Documents\Tcl\bin\Pushover\DriftRoof',num2str(i),'.out');
 disp = importdata(file);
@@ -56,9 +56,8 @@ disp = importdata(file);
 Joint_rot(i) = max(abs(disp(1:max(size(disp))-2,2)));
 xlswrite(file_name,Joint_rot,'JR',start)
 
-file = strcat('C:\Users\lakshd5\Documents\Tcl\bin\Pushover\DriftRoof',num2str(i),'.out');
-disp = importdata(file);
-roof_drift_res(i) = abs(disp(max(size(disp(:,2)))-2,2));
-xlswrite(file_name,roof_drift_res,'RD_res',start)
+file = strcat('C:\Users\lakshd5\Documents\Tcl\bin\Collapse Info.txt');
+info = importdata(file);
+xlswrite(file_name,info,'Coll Info',start)
 end
 %delete('C:/Tcl/bin/temp/.*out')
